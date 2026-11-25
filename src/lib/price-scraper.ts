@@ -36,8 +36,8 @@ export function parseBRLPrice(raw: unknown): number | null {
   const cleaned = raw.replace(/\u00a0/g, " ").trim();
   if (!cleaned) return null;
 
-  // Caso 1: Formato decimal internacional puro vindo de JSON-LD / Meta tags (ex: "149.90" ou "1299.9")
-  if (/^\d+(\.\d{1,2})?$/.test(cleaned)) {
+  // Caso 1: Formato decimal internacional puro vindo de JSON-LD / Meta tags (ex: "149.90", "149.9000" ou "1299.9")
+  if (/^\d+(\.\d+)?$/.test(cleaned)) {
     const num = Number(cleaned);
     return num > 0 && num <= 1_000_000 ? roundCurrency(num) : null;
   }
@@ -65,13 +65,37 @@ export function parseBRLPrice(raw: unknown): number | null {
   return null;
 }
 
+export function extractUrlFromSharedText(input: string): {
+  extractedUrl: string;
+  hintPrice: number | null;
+} {
+  const trimmed = input.trim();
+  const hintMatch = trimmed.match(/R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})/i);
+  const hintPrice = hintMatch ? parseBRLPrice(hintMatch[0]) : null;
+
+  const urlMatch = trimmed.match(/https?:\/\/[^\s"'<>]+/i);
+  if (urlMatch) {
+    return {
+      extractedUrl: urlMatch[0].replace(/[.,;!?)]+$/, ""),
+      hintPrice,
+    };
+  }
+
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+\//i.test(trimmed)) {
+    return { extractedUrl: `https://${trimmed}`, hintPrice };
+  }
+
+  return { extractedUrl: trimmed, hintPrice };
+}
+
 /**
  * Valida URL pública HTTP/HTTPS bloqueando endereços internos/privados (proteção anti-SSRF).
  */
 export function assertSafePublicUrl(rawUrl: string): URL {
+  const { extractedUrl } = extractUrlFromSharedText(rawUrl);
   let parsed: URL;
   try {
-    parsed = new URL(rawUrl.trim());
+    parsed = new URL(extractedUrl);
   } catch {
     throw new AppError("Informe um link válido começando com https://", 400, "INVALID_URL");
   }
@@ -418,9 +442,10 @@ export function extractProductInfoFromHtml(
  * Busca a página do produto na web com timeout seguro e extrai título + valor em R$.
  */
 export async function scrapeProductUrl(
-  rawUrl: string
+  rawInput: string
 ): Promise<ScrapedProductResult> {
-  const parsedUrl = assertSafePublicUrl(rawUrl);
+  const { hintPrice } = extractUrlFromSharedText(rawInput);
+  const parsedUrl = assertSafePublicUrl(rawInput);
   const normalizedUrl = parsedUrl.toString();
 
   try {
@@ -432,12 +457,23 @@ export async function scrapeProductUrl(
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Cache-Control": "no-cache",
+        "Upgrade-Insecure-Requests": "1",
       },
     });
 
     if (!response.ok) {
+      if (hintPrice !== null) {
+        return {
+          url: normalizedUrl,
+          title: fallbackTitleFromUrl(normalizedUrl),
+          price: hintPrice,
+          scrapedSuccessfully: true,
+          source: "dom-brl-regex",
+        };
+      }
       return {
         url: normalizedUrl,
         title: fallbackTitleFromUrl(normalizedUrl),
@@ -448,8 +484,26 @@ export async function scrapeProductUrl(
     }
 
     const html = await response.text();
-    return extractProductInfoFromHtml(html, normalizedUrl);
+    const extracted = extractProductInfoFromHtml(html, normalizedUrl);
+    if (!extracted.scrapedSuccessfully && hintPrice !== null) {
+      return {
+        ...extracted,
+        price: hintPrice,
+        scrapedSuccessfully: true,
+        warning: undefined,
+      };
+    }
+    return extracted;
   } catch {
+    if (hintPrice !== null) {
+      return {
+        url: normalizedUrl,
+        title: fallbackTitleFromUrl(normalizedUrl),
+        price: hintPrice,
+        scrapedSuccessfully: true,
+        source: "dom-brl-regex",
+      };
+    }
     return {
       url: normalizedUrl,
       title: fallbackTitleFromUrl(normalizedUrl),

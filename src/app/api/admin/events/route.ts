@@ -26,6 +26,20 @@ export async function GET(req: NextRequest) {
     await connectDB();
 
     const events = await EventModel.find().sort({ createdAt: -1 }).lean();
+
+    for (const ev of events) {
+      if (!ev.giftToken || !ev.currentRound) {
+        const newGiftTok = ev.giftToken || generateShareToken();
+        const newRound = ev.currentRound || "round1_gifts";
+        await EventModel.updateOne(
+          { _id: ev._id },
+          { $set: { giftToken: newGiftTok, currentRound: newRound } }
+        );
+        ev.giftToken = newGiftTok;
+        ev.currentRound = newRound;
+      }
+    }
+
     const eventIds = events.map((e) => e._id);
 
     const [families, participants, rules] = await Promise.all([

@@ -414,11 +414,18 @@ export default function AdminDashboard() {
   async function handleSaveBudget(e: React.FormEvent) {
     e.preventDefault();
     if (!details) return;
-    const trimmed = budgetInput.replace(",", ".").trim();
-    const parsed = trimmed === "" ? null : Number(trimmed);
-    if (parsed !== null && (!Number.isFinite(parsed) || parsed < 0)) {
-      notify("error", "Informe um valor válido em reais ou deixe em branco.");
-      return;
+    const raw = budgetInput.replace(/[R$\s]/gi, "").trim();
+    let parsed: number | null = null;
+    if (raw !== "") {
+      const normalized = raw.includes(",")
+        ? raw.replace(/\./g, "").replace(",", ".")
+        : raw;
+      parsed = Number(normalized);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        notify("error", "Informe um valor válido em reais (ex: 150 ou 150,00).");
+        return;
+      }
+      parsed = Math.round(parsed * 100) / 100;
     }
 
     const res = await fetch(`/api/admin/events/${details.event.id}`, {
@@ -429,15 +436,21 @@ export default function AdminDashboard() {
         maxBudget: parsed,
       }),
     });
-    if (res.ok) {
-      notify(
-        "success",
-        parsed
-          ? `Valor sugerido definido em ${formatBRL(parsed)}!`
-          : "Limite de valor removido."
-      );
-      await loadEventDetails(details.event.id);
+    const data = await res.json();
+    if (!res.ok) {
+      notify("error", data.error || "Erro ao salvar valor sugerido.");
+      return;
     }
+    notify(
+      "success",
+      parsed
+        ? `Valor sugerido salvo: ${formatBRL(parsed)}!`
+        : "Limite de valor removido."
+    );
+    await Promise.all([
+      loadEventDetails(details.event.id),
+      loadEvents(details.event.id),
+    ]);
   }
 
   async function handleEventAction(

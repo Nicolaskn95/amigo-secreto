@@ -113,6 +113,18 @@ export type ParticipantDoc = InferSchemaType<typeof ParticipantSchema> & {
   _id: mongoose.Types.ObjectId;
 };
 
+// Em modo dev (Hot Reload), garante que os campos giftItems e giftsTotal sejam recarregados
+const existingParticipantModel = mongoose.models.Participant as
+  | Model<ParticipantDoc>
+  | undefined;
+if (
+  existingParticipantModel &&
+  (!existingParticipantModel.schema.path("giftItems") ||
+    !existingParticipantModel.schema.path("giftsTotal"))
+) {
+  mongoose.deleteModel("Participant");
+}
+
 export const ParticipantModel: Model<ParticipantDoc> =
   (mongoose.models.Participant as Model<ParticipantDoc>) ||
   mongoose.model<ParticipantDoc>("Participant", ParticipantSchema);

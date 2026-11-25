@@ -55,6 +55,17 @@ export type EventDoc = InferSchemaType<typeof EventSchema> & {
   _id: mongoose.Types.ObjectId;
 };
 
+// Em modo dev (Hot Reload), garante que novos campos (giftToken, currentRound, maxBudget) sejam recarregados
+const existingEventModel = mongoose.models.Event as Model<EventDoc> | undefined;
+if (
+  existingEventModel &&
+  (!existingEventModel.schema.path("giftToken") ||
+    !existingEventModel.schema.path("currentRound") ||
+    !existingEventModel.schema.path("maxBudget"))
+) {
+  mongoose.deleteModel("Event");
+}
+
 export const EventModel: Model<EventDoc> =
   (mongoose.models.Event as Model<EventDoc>) ||
   mongoose.model<EventDoc>("Event", EventSchema);
