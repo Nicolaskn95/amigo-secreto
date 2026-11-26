@@ -22,6 +22,72 @@ export function sumGiftItems(items: Array<{ price: number }>): number {
   return roundCurrency(total);
 }
 
+export interface OptionGroupSummary {
+  optionGroup: number;
+  subtotal: number;
+  itemCount: number;
+}
+
+/**
+ * Agrupa itens por `optionGroup` (Opção 1, Opção 2...):
+ * - Itens dentro da MESMA opção são somados (combo).
+ * - Opções diferentes são alternativas ("OU") e NÃO se somam entre si!
+ */
+export function summarizeGiftOptions<
+  T extends { price: number; optionGroup?: number }
+>(
+  items: T[]
+): {
+  normalizedItems: Array<T & { optionGroup: number }>;
+  groups: OptionGroupSummary[];
+  maxOptionTotal: number;
+  isMultiOption: boolean;
+} {
+  const groupRemap = new Map<number, number>();
+  let nextGroup = 1;
+
+  const normalizedItems = items.map((item) => {
+    const rawGroup =
+      typeof item.optionGroup === "number" && item.optionGroup >= 1
+        ? Math.floor(item.optionGroup)
+        : 1;
+    if (!groupRemap.has(rawGroup)) {
+      groupRemap.set(rawGroup, nextGroup++);
+    }
+    return {
+      ...item,
+      optionGroup: groupRemap.get(rawGroup)!,
+    };
+  });
+
+  const groupsMap = new Map<number, T[]>();
+  for (const item of normalizedItems) {
+    const list = groupsMap.get(item.optionGroup) || [];
+    list.push(item);
+    groupsMap.set(item.optionGroup, list);
+  }
+
+  const groups: OptionGroupSummary[] = Array.from(groupsMap.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([optionGroup, groupItems]) => ({
+      optionGroup,
+      subtotal: sumGiftItems(groupItems),
+      itemCount: groupItems.length,
+    }));
+
+  const maxOptionTotal =
+    groups.length > 0
+      ? Math.max(...groups.map((g) => g.subtotal))
+      : 0;
+
+  return {
+    normalizedItems,
+    groups,
+    maxOptionTotal: roundCurrency(maxOptionTotal),
+    isMultiOption: groups.length > 1,
+  };
+}
+
 /**
  * Converte strings monetárias brasileiras ("R$ 1.299,90", "89,90") ou decimais ("129.90") em número.
  */

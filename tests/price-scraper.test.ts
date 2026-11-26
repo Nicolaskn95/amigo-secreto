@@ -3,6 +3,7 @@ import {
   assertSafePublicUrl,
   extractProductInfoFromHtml,
   sumGiftItems,
+  summarizeGiftOptions,
 } from "@/lib/price-scraper";
 
 describe("Web Scraper de Preços em R$ (4 Camadas + Sem Riscados)", () => {
@@ -116,6 +117,19 @@ describe("Web Scraper de Preços em R$ (4 Camadas + Sem Riscados)", () => {
       { price: 39.9 },
     ]);
     expect(total).toBe(279.75);
+
+    // Verifica separação entre Opção 1 (não somada com Opção 2) vs combo na mesma opção
+    const optSummary = summarizeGiftOptions([
+      { price: 140, optionGroup: 1 },
+      { price: 60, optionGroup: 2 },
+      { price: 55, optionGroup: 2 },
+    ]);
+    expect(optSummary.isMultiOption).toBe(true);
+    expect(optSummary.groups).toEqual([
+      { optionGroup: 1, subtotal: 140, itemCount: 1 },
+      { optionGroup: 2, subtotal: 115, itemCount: 2 },
+    ]);
+    expect(optSummary.maxOptionTotal).toBe(140);
   });
 
   it("bloqueia URLs locais ou IPs privados contra SSRF", () => {

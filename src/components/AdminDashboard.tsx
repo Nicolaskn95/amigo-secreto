@@ -53,6 +53,7 @@ interface ParticipantItem {
   role: string;
   giftHint: string;
   giftItemsCount: number;
+  giftOptionsCount?: number;
   giftsTotal: number;
   hasDrawn: boolean;
   hasPin: boolean;
@@ -1439,8 +1440,9 @@ export default function AdminDashboard() {
                                           )}
                                           {m.giftItemsCount > 0 && (
                                             <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 text-[10px] font-semibold">
-                                              {m.giftItemsCount} link(s) •{" "}
-                                              {formatBRL(m.giftsTotal)}
+                                              {(m.giftOptionsCount || 1) > 1
+                                                ? `${m.giftOptionsCount} opções • até ${formatBRL(m.giftsTotal)}`
+                                                : `${m.giftItemsCount} link(s) • ${formatBRL(m.giftsTotal)}`}
                                             </span>
                                           )}
                                           <span

@@ -52,6 +52,7 @@ interface GiftItemDTO {
   title: string;
   url: string;
   price: number;
+  optionGroup?: number;
   scraped: boolean;
 }
 
@@ -146,6 +147,28 @@ export default function PublicDrawClient({ token }: { token: string }) {
     data?.families.forEach((f) => map.set(f.id, f));
     return map;
   }, [data]);
+
+  const revealedOptionGroups = useMemo(() => {
+    const raw = revealed?.chosen.giftItems || [];
+    const grouped = new Map<number, GiftItemDTO[]>();
+    for (const item of raw) {
+      const g = item.optionGroup && item.optionGroup >= 1 ? item.optionGroup : 1;
+      const list = grouped.get(g) || [];
+      list.push(item);
+      grouped.set(g, list);
+    }
+    return Array.from(grouped.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([optionGroup, groupItems]) => ({
+        optionGroup,
+        items: groupItems,
+        subtotal:
+          Math.round(
+            groupItems.reduce((acc, it) => acc + (Number(it.price) || 0), 0) *
+              100
+          ) / 100,
+      }));
+  }, [revealed]);
 
   function fireConfetti() {
     try {
@@ -372,49 +395,92 @@ export default function PublicDrawClient({ token }: { token: string }) {
                   </div>
                 </div>
 
-                {/* Lista de Links dos Presentes da Pessoa Sorteada */}
+                {/* Lista de Opções de Presentes da Pessoa Sorteada */}
                 <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-5 space-y-4">
                   <div className="flex items-center justify-between gap-2">
-                    <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
-                      <Gift className="w-4 h-4 text-rose-600" />
-                      Presentes que {revealed.chosen.name} quer ganhar
-                    </h3>
-                    {revealed.chosen.giftItems?.length > 0 && (
+                    <div>
+                      <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                        <Gift className="w-4 h-4 text-rose-600" />
+                        Presentes que {revealed.chosen.name} quer ganhar
+                      </h3>
+                      {revealedOptionGroups.length > 1 && (
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Foram indicadas {revealedOptionGroups.length} opções
+                          separadas — escolha uma delas:
+                        </p>
+                      )}
+                    </div>
+                    {revealedOptionGroups.length === 1 && (
                       <span className="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-slate-900 text-white">
-                        Soma: {formatBRL(revealed.chosen.giftsTotal)}
+                        {revealedOptionGroups[0].items.length > 1
+                          ? `Soma: ${formatBRL(revealedOptionGroups[0].subtotal)}`
+                          : `Valor: ${formatBRL(revealedOptionGroups[0].subtotal)}`}
                       </span>
                     )}
                   </div>
 
-                  {revealed.chosen.giftItems?.length > 0 ? (
-                    <div className="space-y-2.5">
-                      {revealed.chosen.giftItems.map((item) => (
-                        <div
-                          key={item.id}
-                          className="bg-white rounded-xl border border-slate-200 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                        >
-                          <div className="min-w-0">
-                            <p className="font-semibold text-sm text-slate-900">
-                              {item.title}
-                            </p>
-                            {item.price > 0 && (
-                              <p className="text-xs font-bold text-emerald-700 mt-0.5">
-                                {formatBRL(item.price)}
-                              </p>
-                            )}
-                          </div>
-
-                          {item.url && (
-                            <a
-                              href={item.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-200 px-3.5 py-2 text-xs font-bold text-rose-700 shrink-0 transition"
-                            >
-                              Abrir Link do Produto
-                              <ExternalLink className="w-3.5 h-3.5" />
-                            </a>
+                  {revealedOptionGroups.length > 0 ? (
+                    <div className="space-y-3">
+                      {revealedOptionGroups.map((group, gIdx) => (
+                        <div key={group.optionGroup} className="space-y-2">
+                          {gIdx > 0 && (
+                            <div className="flex items-center gap-3 py-0.5">
+                              <div className="h-px bg-slate-200 flex-1" />
+                              <span className="px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-700 text-[10px] font-extrabold">
+                                OU
+                              </span>
+                              <div className="h-px bg-slate-200 flex-1" />
+                            </div>
                           )}
+
+                          <div className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-2.5">
+                            {revealedOptionGroups.length > 1 && (
+                              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                                <span className="text-xs font-extrabold text-slate-800">
+                                  Opção {group.optionGroup}
+                                  {group.items.length > 1
+                                    ? " (Combo somado)"
+                                    : ""}
+                                </span>
+                                {group.subtotal > 0 && (
+                                  <span className="text-xs font-extrabold text-emerald-700">
+                                    {group.items.length > 1 ? "Soma: " : ""}
+                                    {formatBRL(group.subtotal)}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
+                            {group.items.map((item) => (
+                              <div
+                                key={item.id}
+                                className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                              >
+                                <div className="min-w-0">
+                                  <p className="font-semibold text-sm text-slate-900">
+                                    {item.title}
+                                  </p>
+                                  {item.price > 0 && (
+                                    <p className="text-xs font-bold text-emerald-700 mt-0.5">
+                                      {formatBRL(item.price)}
+                                    </p>
+                                  )}
+                                </div>
+
+                                {item.url && (
+                                  <a
+                                    href={item.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-200 px-3.5 py-2 text-xs font-bold text-rose-700 shrink-0 transition"
+                                  >
+                                    Abrir Link do Produto
+                                    <ExternalLink className="w-3.5 h-3.5" />
+                                  </a>
+                                )}
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       ))}
                     </div>

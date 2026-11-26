@@ -16,6 +16,7 @@ export interface GiftItemDTO {
   title: string;
   url: string;
   price: number;
+  optionGroup: number;
   scraped: boolean;
 }
 
@@ -54,6 +55,7 @@ function mapRevealedFriend(
       title: item.title,
       url: item.url || "",
       price: Number(item.price) || 0,
+      optionGroup: Number(item.optionGroup) >= 1 ? Number(item.optionGroup) : 1,
       scraped: Boolean(item.scraped),
     })),
     giftsTotal: Number(chosenDoc.giftsTotal) || 0,

@@ -124,19 +124,28 @@ export async function GET(
         name: f.name,
         color: f.color,
       })),
-      participants: participants.map((p) => ({
-        id: p._id.toString(),
-        familyId: p.familyId.toString(),
-        name: p.name,
-        role: p.role || "",
-        giftHint: p.giftHint || "",
-        giftItemsCount: Array.isArray(p.giftItems) ? p.giftItems.length : 0,
-        giftsTotal: Number(p.giftsTotal) || 0,
-        hasDrawn: Boolean(p.hasDrawn),
-        hasPin: Boolean(p.pinHash),
-        reRollCount: p.reRollCount || 0,
-        drawnAt: p.drawnAt,
-      })),
+      participants: participants.map((p) => {
+        const gItems = Array.isArray(p.giftItems) ? p.giftItems : [];
+        const uniqueGroups = new Set(
+          gItems.map((it) =>
+            Number(it.optionGroup) >= 1 ? Number(it.optionGroup) : 1
+          )
+        );
+        return {
+          id: p._id.toString(),
+          familyId: p.familyId.toString(),
+          name: p.name,
+          role: p.role || "",
+          giftHint: p.giftHint || "",
+          giftItemsCount: gItems.length,
+          giftOptionsCount: uniqueGroups.size,
+          giftsTotal: Number(p.giftsTotal) || 0,
+          hasDrawn: Boolean(p.hasDrawn),
+          hasPin: Boolean(p.pinHash),
+          reRollCount: p.reRollCount || 0,
+          drawnAt: p.drawnAt,
+        };
+      }),
       rules: rules.map((r) => ({
         id: r._id.toString(),
         scope: r.scope,

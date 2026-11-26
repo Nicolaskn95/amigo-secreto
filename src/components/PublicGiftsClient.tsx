@@ -52,6 +52,7 @@ interface EditableGiftItem {
   title: string;
   url: string;
   priceStr: string;
+  optionGroup: number;
   scraped: boolean;
 }
 
@@ -72,6 +73,18 @@ function parseInputPrice(str: string): number {
   }
   const n = Number(cleaned);
   return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : 0;
+}
+
+function normalizeGroups(list: EditableGiftItem[]): EditableGiftItem[] {
+  const remap = new Map<number, number>();
+  let next = 1;
+  return list.map((item) => {
+    const g = item.optionGroup >= 1 ? item.optionGroup : 1;
+    if (!remap.has(g)) {
+      remap.set(g, next++);
+    }
+    return { ...item, optionGroup: remap.get(g)! };
+  });
 }
 
 export default function PublicGiftsClient({
@@ -96,6 +109,8 @@ export default function PublicGiftsClient({
   const [giftHint, setGiftHint] = useState("");
   const [items, setItems] = useState<EditableGiftItem[]>([]);
   const [urlInput, setUrlInput] = useState("");
+  const [addMode, setAddMode] = useState<"new_option" | "sum">("new_option");
+  const [targetSumGroup, setTargetSumGroup] = useState<number>(1);
   const [scraping, setScraping] = useState(false);
   const [scrapeNotice, setScrapeNotice] = useState<{
     type: "success" | "warning" | "error";
@@ -162,13 +177,47 @@ export default function PublicGiftsClient({
     return data.participants.filter((p) => p.familyId === selectedFamilyId);
   }, [data, selectedFamilyId]);
 
-  const liveTotal = useMemo(() => {
-    const sum = items.reduce(
-      (acc, item) => acc + parseInputPrice(item.priceStr),
-      0
-    );
-    return Math.round(sum * 100) / 100;
+  const optionSummaries = useMemo(() => {
+    const map = new Map<number, EditableGiftItem[]>();
+    for (const item of items) {
+      const g = item.optionGroup || 1;
+      const arr = map.get(g) || [];
+      arr.push(item);
+      map.set(g, arr);
+    }
+
+    return Array.from(map.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([optionGroup, groupItems]) => {
+        const subtotal = Math.round(
+          groupItems.reduce(
+            (acc, it) => acc + parseInputPrice(it.priceStr),
+            0
+          ) * 100
+        ) / 100;
+        return {
+          optionGroup,
+          items: groupItems,
+          subtotal,
+        };
+      });
   }, [items]);
+
+  const maxOptionValue = useMemo(() => {
+    if (optionSummaries.length === 0) return 0;
+    return Math.max(...optionSummaries.map((g) => g.subtotal));
+  }, [optionSummaries]);
+
+  function getNextTargetOptionGroup(): number {
+    if (items.length === 0) return 1;
+    if (addMode === "sum") {
+      const exists = optionSummaries.some(
+        (g) => g.optionGroup === targetSumGroup
+      );
+      return exists ? targetSumGroup : optionSummaries[0].optionGroup;
+    }
+    return Math.max(...items.map((it) => it.optionGroup || 1)) + 1;
+  }
 
   async function handleUnlockWithPin(e: React.FormEvent) {
     e.preventDefault();
@@ -198,26 +247,30 @@ export default function PublicGiftsClient({
 
       setUnlockedPin(pin.trim());
       setGiftHint(json.giftHint || "");
-      setItems(
-        (json.giftItems || []).map(
-          (
-            it: {
-              id?: string;
-              title: string;
-              url: string;
-              price: number;
-              scraped: boolean;
-            },
-            idx: number
-          ) => ({
-            localId: it.id || `item-${Date.now()}-${idx}`,
-            title: it.title,
-            url: it.url || "",
-            priceStr: Number(it.price || 0).toFixed(2).replace(".", ","),
-            scraped: Boolean(it.scraped),
-          })
-        )
+      const loadedItems: EditableGiftItem[] = (json.giftItems || []).map(
+        (
+          it: {
+            id?: string;
+            title: string;
+            url: string;
+            price: number;
+            optionGroup?: number;
+            scraped: boolean;
+          },
+          idx: number
+        ) => ({
+          localId: it.id || `item-${Date.now()}-${idx}`,
+          title: it.title,
+          url: it.url || "",
+          priceStr: Number(it.price || 0).toFixed(2).replace(".", ","),
+          optionGroup:
+            typeof it.optionGroup === "number" && it.optionGroup >= 1
+              ? it.optionGroup
+              : 1,
+          scraped: Boolean(it.scraped),
+        })
       );
+      setItems(normalizeGroups(loadedItems));
       setScrapeNotice(null);
       setSavedSuccess(false);
     } catch {
@@ -254,25 +307,33 @@ export default function PublicGiftsClient({
       const detectedPrice =
         typeof json.price === "number" && json.price > 0 ? json.price : 0;
 
-      setItems((prev) => [
-        ...prev,
-        {
-          localId: `item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          title: json.title || "Produto com link",
-          url: json.url || rawUrl,
-          priceStr:
-            detectedPrice > 0
-              ? detectedPrice.toFixed(2).replace(".", ",")
-              : "",
-          scraped: Boolean(json.scrapedSuccessfully),
-        },
-      ]);
+      const assignedGroup = getNextTargetOptionGroup();
+
+      setItems((prev) =>
+        normalizeGroups([
+          ...prev,
+          {
+            localId: `item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            title: json.title || "Produto com link",
+            url: json.url || rawUrl,
+            priceStr:
+              detectedPrice > 0
+                ? detectedPrice.toFixed(2).replace(".", ",")
+                : "",
+            optionGroup: assignedGroup,
+            scraped: Boolean(json.scrapedSuccessfully),
+          },
+        ])
+      );
       setUrlInput("");
 
       if (json.scrapedSuccessfully && detectedPrice > 0) {
         setScrapeNotice({
           type: "success",
-          text: `Valor capturado automaticamente: ${formatBRL(detectedPrice)}!`,
+          text:
+            items.length > 0 && addMode === "new_option"
+              ? `Adicionado como Opção ${assignedGroup} (${formatBRL(detectedPrice)}) sem somar com as anteriores!`
+              : `Valor capturado automaticamente: ${formatBRL(detectedPrice)}!`,
         });
       } else {
         setScrapeNotice({
@@ -294,16 +355,20 @@ export default function PublicGiftsClient({
 
   function handleAddManualItem() {
     setSavedSuccess(false);
-    setItems((prev) => [
-      ...prev,
-      {
-        localId: `manual-${Date.now()}`,
-        title: "",
-        url: "",
-        priceStr: "",
-        scraped: false,
-      },
-    ]);
+    const assignedGroup = getNextTargetOptionGroup();
+    setItems((prev) =>
+      normalizeGroups([
+        ...prev,
+        {
+          localId: `manual-${Date.now()}`,
+          title: "",
+          url: "",
+          priceStr: "",
+          optionGroup: assignedGroup,
+          scraped: false,
+        },
+      ])
+    );
   }
 
   function updateItem(
@@ -317,9 +382,26 @@ export default function PublicGiftsClient({
     );
   }
 
+  function changeItemOptionGroup(localId: string, rawTarget: string) {
+    setSavedSuccess(false);
+    setItems((prev) => {
+      const nextGroupNumber =
+        rawTarget === "NEW"
+          ? Math.max(0, ...prev.map((i) => i.optionGroup)) + 1
+          : Number(rawTarget) || 1;
+
+      const updated = prev.map((it) =>
+        it.localId === localId ? { ...it, optionGroup: nextGroupNumber } : it
+      );
+      return normalizeGroups(updated);
+    });
+  }
+
   function removeItem(localId: string) {
     setSavedSuccess(false);
-    setItems((prev) => prev.filter((it) => it.localId !== localId));
+    setItems((prev) =>
+      normalizeGroups(prev.filter((it) => it.localId !== localId))
+    );
   }
 
   async function handleSaveGifts(e: React.FormEvent) {
@@ -332,6 +414,7 @@ export default function PublicGiftsClient({
         title: it.title.trim() || "Sugestão de presente",
         url: it.url.trim(),
         price: parseInputPrice(it.priceStr),
+        optionGroup: it.optionGroup || 1,
         scraped: it.scraped,
       }));
 
@@ -417,7 +500,7 @@ export default function PublicGiftsClient({
   const isOverBudget =
     data.event.maxBudget !== null &&
     data.event.maxBudget > 0 &&
-    liveTotal > data.event.maxBudget;
+    maxOptionValue > data.event.maxBudget;
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-blue-50/70 via-white to-slate-50 py-8 px-4">
@@ -442,14 +525,14 @@ export default function PublicGiftsClient({
             {data.event.name}
           </h1>
           <p className="text-xs sm:text-sm text-slate-600 mt-1">
-            Adicione links dos produtos que você gostaria de ganhar. O sistema
-            busca e soma os preços automaticamente para quem tirar você na 2ª
-            Rodada!
+            Adicione links dos produtos que gostaria de ganhar — você pode
+            cadastrar <strong>opções alternativas</strong> (sem somar) ou{" "}
+            <strong>somar itens em combo</strong>!
           </p>
 
           {data.event.maxBudget !== null && data.event.maxBudget > 0 && (
             <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold">
-              Valor sugerido pelo organizador: até{" "}
+              Valor sugerido por opção: até{" "}
               <strong>{formatBRL(data.event.maxBudget)}</strong>
             </div>
           )}
@@ -485,7 +568,7 @@ export default function PublicGiftsClient({
             </p>
           </div>
         ) : selectedPerson && unlockedPin ? (
-          /* Etapa 3: Editor de Links e Soma de Valores */
+          /* Etapa 3: Editor de Links (Opções Alternativas vs Somar Combo) */
           <div className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-8 shadow-sm space-y-6">
             <div className="flex items-center justify-between gap-2">
               <button
@@ -510,21 +593,100 @@ export default function PublicGiftsClient({
 
             <div>
               <h2 className="text-xl font-extrabold text-slate-900">
-                Lista de Presentes de {selectedPerson.name}
+                Presentes de {selectedPerson.name}
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
-                Cole um ou mais links de produtos abaixo. Tudo é opcional — você
-                também pode ajustar o nome ou valor antes de salvar.
+                Escolha abaixo se o próximo link é uma{" "}
+                <strong>outra opção de presente (não soma)</strong> ou se deve{" "}
+                <strong>somar junto</strong> em um combo.
               </p>
             </div>
 
-            {/* Adicionar Link com Web Scraping */}
+            {/* Adicionar Link com Web Scraping + Escolha "Outra Opção" vs "Somar" */}
             <form
               onSubmit={handleScrapeUrl}
-              className="rounded-2xl bg-blue-50/70 border border-blue-200 p-4 space-y-2.5"
+              className="rounded-2xl bg-blue-50/70 border border-blue-200 p-4 space-y-3"
             >
+              {items.length > 0 && (
+                <div className="space-y-2 pb-2 border-b border-blue-200/70">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-blue-900">
+                    Como adicionar o próximo produto?
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAddMode("new_option")}
+                      className={`rounded-xl border px-3 py-2 text-left text-xs transition cursor-pointer ${
+                        addMode === "new_option"
+                          ? "bg-blue-600 text-white border-blue-600 font-bold shadow-xs"
+                          : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                      }`}
+                    >
+                      <span className="block">
+                        Outra opção de presente (OU)
+                      </span>
+                      <span
+                        className={`block text-[10px] mt-0.5 ${
+                          addMode === "new_option"
+                            ? "text-blue-100"
+                            : "text-slate-500"
+                        }`}
+                      >
+                        Não soma — quem te tirar escolhe 1 opção
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddMode("sum");
+                        if (optionSummaries[0]) {
+                          setTargetSumGroup(optionSummaries[0].optionGroup);
+                        }
+                      }}
+                      className={`rounded-xl border px-3 py-2 text-left text-xs transition cursor-pointer ${
+                        addMode === "sum"
+                          ? "bg-slate-900 text-white border-slate-900 font-bold shadow-xs"
+                          : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                      }`}
+                    >
+                      <span className="block">Somar junto (+ Combo)</span>
+                      <span
+                        className={`block text-[10px] mt-0.5 ${
+                          addMode === "sum" ? "text-slate-300" : "text-slate-500"
+                        }`}
+                      >
+                        Soma o valor junto na mesma opção
+                      </span>
+                    </button>
+                  </div>
+
+                  {addMode === "sum" && optionSummaries.length > 1 && (
+                    <div className="flex items-center gap-2 pt-1">
+                      <span className="text-xs font-medium text-slate-700">
+                        Somar dentro da:
+                      </span>
+                      <select
+                        value={targetSumGroup}
+                        onChange={(e) =>
+                          setTargetSumGroup(Number(e.target.value))
+                        }
+                        className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold"
+                      >
+                        {optionSummaries.map((g) => (
+                          <option key={g.optionGroup} value={g.optionGroup}>
+                            Opção {g.optionGroup} (atual:{" "}
+                            {formatBRL(g.subtotal)})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <label className="block text-xs font-bold text-blue-900">
-                Adicionar produto por link (captura automática de preço em R$):
+                Link do produto (captura automática do valor em R$):
               </label>
               <div className="flex flex-col sm:flex-row gap-2">
                 <div className="relative flex-1">
@@ -576,12 +738,12 @@ export default function PublicGiftsClient({
               </div>
             )}
 
-            {/* Lista de Itens e Soma */}
+            {/* Lista Agrupada por Opção 1, Opção 2... */}
             <form onSubmit={handleSaveGifts} className="space-y-4">
-              <div className="space-y-3">
+              <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold uppercase tracking-wider text-slate-600">
-                    Itens Adicionados ({items.length})
+                    Suas Opções de Presente ({optionSummaries.length} opção/ões)
                   </span>
                   <button
                     type="button"
@@ -592,129 +754,243 @@ export default function PublicGiftsClient({
                   </button>
                 </div>
 
-                {items.length === 0 ? (
+                {optionSummaries.length === 0 ? (
                   <div className="rounded-2xl border border-dashed border-slate-300 py-6 px-4 text-center text-xs text-slate-400">
-                    Nenhum link adicionado ainda. Cole o link de um produto
+                    Nenhum presente adicionado ainda. Cole o link de um produto
                     acima ou clique em &ldquo;+ Adicionar item sem link&rdquo;.
                   </div>
                 ) : (
-                  items.map((item, index) => (
-                    <div
-                      key={item.localId}
-                      className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2.5"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-bold text-slate-500">
-                          Presente #{index + 1}{" "}
-                          {item.scraped && (
-                            <span className="text-emerald-600 font-semibold">
-                              • Preço lido do site
-                            </span>
-                          )}
-                        </span>
-                        <div className="flex items-center gap-2">
-                          {item.url && (
-                            <a
-                              href={item.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:underline"
-                            >
-                              Testar link
-                              <ExternalLink className="w-3 h-3" />
-                            </a>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => removeItem(item.localId)}
-                            className="text-slate-400 hover:text-rose-600 p-1 cursor-pointer"
-                            title="Remover item"
+                  optionSummaries.map((group, groupIdx) => (
+                    <div key={group.optionGroup} className="space-y-3">
+                      {groupIdx > 0 && (
+                        <div className="flex items-center gap-3 py-1">
+                          <div className="h-px bg-slate-200 flex-1" />
+                          <span className="px-3 py-0.5 rounded-full bg-blue-100 text-blue-800 text-[11px] font-extrabold">
+                            OU OUTRA OPÇÃO
+                          </span>
+                          <div className="h-px bg-slate-200 flex-1" />
+                        </div>
+                      )}
+
+                      <div className="rounded-2xl border-2 border-slate-200 bg-slate-50/60 p-4 space-y-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="inline-flex items-center gap-1.5 text-xs font-extrabold text-slate-900">
+                            Opção {group.optionGroup}
+                            {group.items.length > 1 && (
+                              <span className="text-[11px] font-semibold text-slate-500">
+                                ({group.items.length} itens somados em combo)
+                              </span>
+                            )}
+                          </span>
+
+                          <span className="px-2.5 py-1 rounded-lg bg-slate-900 text-white text-xs font-bold">
+                            {group.items.length > 1 ? "Soma: " : "Valor: "}
+                            {formatBRL(group.subtotal)}
+                          </span>
+                        </div>
+
+                        {group.items.map((item) => (
+                          <div
+                            key={item.localId}
+                            className="rounded-xl border border-slate-200 bg-white p-3 space-y-2.5"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-2">
+                                <label className="text-[11px] font-semibold text-slate-500">
+                                  Modo:
+                                </label>
+                                <select
+                                  value={String(item.optionGroup)}
+                                  onChange={(e) =>
+                                    changeItemOptionGroup(
+                                      item.localId,
+                                      e.target.value
+                                    )
+                                  }
+                                  className="rounded-lg border border-slate-300 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-800"
+                                >
+                                  {optionSummaries.map((opt) => (
+                                    <option
+                                      key={opt.optionGroup}
+                                      value={String(opt.optionGroup)}
+                                    >
+                                      {opt.optionGroup === item.optionGroup
+                                        ? `Na Opção ${opt.optionGroup}`
+                                        : `Somar junto na Opção ${opt.optionGroup}`}
+                                    </option>
+                                  ))}
+                                  {(group.items.length > 1 ||
+                                    optionSummaries.length >= 1) &&
+                                    group.items.length > 1 && (
+                                      <option value="NEW">
+                                        Separar como Outra Opção (não somar)
+                                      </option>
+                                    )}
+                                </select>
 
-                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
-                        <div className="sm:col-span-8">
-                          <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">
-                            Nome do produto
-                          </label>
-                          <input
-                            type="text"
-                            required
-                            value={item.title}
-                            onChange={(e) =>
-                              updateItem(item.localId, "title", e.target.value)
-                            }
-                            placeholder="Ex: Fone Bluetooth JBL"
-                            className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                          />
-                        </div>
+                                {item.scraped && (
+                                  <span className="text-[10px] text-emerald-600 font-semibold">
+                                    • Preço lido do site
+                                  </span>
+                                )}
+                              </div>
 
-                        <div className="sm:col-span-4">
-                          <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">
-                            Valor (R$)
-                          </label>
-                          <input
-                            type="text"
-                            inputMode="decimal"
-                            value={item.priceStr}
-                            onChange={(e) =>
-                              updateItem(
-                                item.localId,
-                                "priceStr",
-                                e.target.value
-                              )
-                            }
-                            placeholder="0,00"
-                            className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-900"
-                          />
-                        </div>
-                      </div>
+                              <div className="flex items-center gap-2">
+                                {item.url && (
+                                  <a
+                                    href={item.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:underline"
+                                  >
+                                    Testar link
+                                    <ExternalLink className="w-3 h-3" />
+                                  </a>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => removeItem(item.localId)}
+                                  className="text-slate-400 hover:text-rose-600 p-1 cursor-pointer"
+                                  title="Remover item"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
 
-                      <div>
-                        <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">
-                          Link do produto (opcional)
-                        </label>
-                        <input
-                          type="url"
-                          value={item.url}
-                          onChange={(e) =>
-                            updateItem(item.localId, "url", e.target.value)
-                          }
-                          placeholder="https://..."
-                          className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] text-slate-600"
-                        />
+                            <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                              <div className="sm:col-span-8">
+                                <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">
+                                  Nome do produto
+                                </label>
+                                <input
+                                  type="text"
+                                  required
+                                  value={item.title}
+                                  onChange={(e) =>
+                                    updateItem(
+                                      item.localId,
+                                      "title",
+                                      e.target.value
+                                    )
+                                  }
+                                  placeholder="Ex: Fone Bluetooth JBL"
+                                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                                />
+                              </div>
+
+                              <div className="sm:col-span-4">
+                                <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">
+                                  Valor (R$)
+                                </label>
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  value={item.priceStr}
+                                  onChange={(e) =>
+                                    updateItem(
+                                      item.localId,
+                                      "priceStr",
+                                      e.target.value
+                                    )
+                                  }
+                                  placeholder="0,00"
+                                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-900"
+                                />
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">
+                                Link do produto (opcional)
+                              </label>
+                              <input
+                                type="text"
+                                value={item.url}
+                                onChange={(e) =>
+                                  updateItem(
+                                    item.localId,
+                                    "url",
+                                    e.target.value
+                                  )
+                                }
+                                placeholder="https://..."
+                                className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] text-slate-600"
+                              />
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   ))
                 )}
               </div>
 
-              {/* Card da Soma Total */}
-              <div
-                className={`rounded-2xl p-4 border flex items-center justify-between ${
-                  isOverBudget
-                    ? "bg-amber-50 border-amber-300 text-amber-900"
-                    : "bg-slate-900 border-slate-900 text-white"
-                }`}
-              >
-                <div>
-                  <p className="text-xs font-medium opacity-80">
-                    Soma total dos links adicionados:
-                  </p>
-                  {isOverBudget && data.event.maxBudget && (
-                    <p className="text-[11px] font-semibold text-amber-700 mt-0.5">
-                      Acima do valor sugerido de{" "}
-                      {formatBRL(data.event.maxBudget)}
-                    </p>
+              {/* Card de Resumo Inteligente (Opções Separadas vs Soma) */}
+              {optionSummaries.length > 0 && (
+                <div
+                  className={`rounded-2xl p-4 border space-y-2 ${
+                    isOverBudget
+                      ? "bg-amber-50 border-amber-300 text-amber-900"
+                      : "bg-slate-900 border-slate-900 text-white"
+                  }`}
+                >
+                  {optionSummaries.length === 1 ? (
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs font-medium opacity-80">
+                          Valor total da Opção 1:
+                        </p>
+                        {isOverBudget && data.event.maxBudget && (
+                          <p className="text-[11px] font-semibold text-amber-700 mt-0.5">
+                            Acima do valor sugerido de{" "}
+                            {formatBRL(data.event.maxBudget)}
+                          </p>
+                        )}
+                      </div>
+                      <span className="text-2xl font-extrabold">
+                        {formatBRL(optionSummaries[0].subtotal)}
+                      </span>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-xs font-semibold opacity-90">
+                        Você cadastrou {optionSummaries.length} opções separadas
+                        (quem tirar você escolherá 1 delas):
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {optionSummaries.map((g, idx) => (
+                          <div
+                            key={g.optionGroup}
+                            className="inline-flex items-center gap-2"
+                          >
+                            {idx > 0 && (
+                              <span className="text-[11px] font-bold opacity-70">
+                                OU
+                              </span>
+                            )}
+                            <span
+                              className={`px-2.5 py-1 rounded-lg text-xs font-bold ${
+                                isOverBudget
+                                  ? "bg-white border border-amber-300 text-amber-900"
+                                  : "bg-white/15 text-white"
+                              }`}
+                            >
+                              Opção {g.optionGroup}: {formatBRL(g.subtotal)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                      {isOverBudget && data.event.maxBudget && (
+                        <p className="text-[11px] font-semibold text-amber-700 pt-1">
+                          Uma das opções ultrapassa o valor sugerido de{" "}
+                          {formatBRL(data.event.maxBudget)}.
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
-                <span className="text-2xl font-extrabold">
-                  {formatBRL(liveTotal)}
-                </span>
-              </div>
+              )}
 
               {/* Observação Livre */}
               <div>
@@ -737,8 +1013,8 @@ export default function PublicGiftsClient({
               {savedSuccess && (
                 <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-xs font-semibold text-emerald-800 flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  Lista de presentes salva com sucesso! Na 2ª Rodada, quem tirar
-                  você verá seus links e valores.
+                  Opções de presente salvas com sucesso! Na 2ª Rodada, quem
+                  tirar você verá cada opção certinha.
                 </div>
               )}
 

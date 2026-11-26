@@ -18,6 +18,12 @@ const GiftItemSchema = new Schema(
       min: 0,
       default: 0,
     },
+    optionGroup: {
+      type: Number,
+      required: true,
+      min: 1,
+      default: 1,
+    },
     scraped: {
       type: Boolean,
       default: false,
@@ -113,14 +119,21 @@ export type ParticipantDoc = InferSchemaType<typeof ParticipantSchema> & {
   _id: mongoose.Types.ObjectId;
 };
 
-// Em modo dev (Hot Reload), garante que os campos giftItems e giftsTotal sejam recarregados
+// Em modo dev (Hot Reload), garante que novos campos inclusive no subdocumento GiftItem sejam recarregados
 const existingParticipantModel = mongoose.models.Participant as
   | Model<ParticipantDoc>
   | undefined;
+const existingGiftSubschema = (
+  existingParticipantModel?.schema.path("giftItems") as
+    | { schema?: Schema }
+    | undefined
+)?.schema;
+
 if (
   existingParticipantModel &&
   (!existingParticipantModel.schema.path("giftItems") ||
-    !existingParticipantModel.schema.path("giftsTotal"))
+    !existingParticipantModel.schema.path("giftsTotal") ||
+    !existingGiftSubschema?.path("optionGroup"))
 ) {
   mongoose.deleteModel("Participant");
 }

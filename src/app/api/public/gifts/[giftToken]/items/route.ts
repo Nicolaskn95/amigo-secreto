@@ -6,7 +6,7 @@ import { AppError, handleApiError, hashPin, verifyPin } from "@/lib/auth";
 import {
   assertSafePublicUrl,
   roundCurrency,
-  sumGiftItems,
+  summarizeGiftOptions,
 } from "@/lib/price-scraper";
 import { EventModel } from "@/models/Event";
 import { ParticipantModel } from "@/models/Participant";
@@ -23,6 +23,7 @@ const giftItemInputSchema = z.object({
   title: z.string().trim().min(1, "Informe o nome do produto.").max(160),
   url: z.string().trim().max(1000).optional().default(""),
   price: z.number().min(0, "O valor não pode ser negativo.").max(1_000_000),
+  optionGroup: z.number().int().min(1).max(30).optional().default(1),
   scraped: z.boolean().optional().default(false),
 });
 
@@ -69,7 +70,6 @@ async function authenticateRound1Participant(
     throw new AppError("Participante não encontrado neste sorteio.", 404);
   }
 
-  // Se ainda não tem PIN (1º acesso na Rodada 1 ou resetado pelo Admin), registra agora
   if (!found.pinHash) {
     const newHash = hashPin(pin);
     const updated = await ParticipantModel.findOneAndUpdate(
@@ -87,7 +87,6 @@ async function authenticateRound1Participant(
     return { event, participant: updated };
   }
 
-  // Se já tem PIN, confere os 4 dígitos
   if (!verifyPin(pin, found.pinHash)) {
     throw new AppError(
       "PIN incorreto! Digite os 4 dígitos que você criou ou peça ao administrador para resetar.",
@@ -127,6 +126,8 @@ export async function POST(
         title: item.title,
         url: item.url || "",
         price: Number(item.price) || 0,
+        optionGroup:
+          Number(item.optionGroup) >= 1 ? Number(item.optionGroup) : 1,
         scraped: Boolean(item.scraped),
       })),
       giftsTotal: Number(participant.giftsTotal) || 0,
@@ -151,7 +152,7 @@ export async function PUT(
       data.pin
     );
 
-    const sanitizedItems = data.giftItems.map((item) => {
+    const cleanedInput = data.giftItems.map((item) => {
       let cleanUrl = item.url.trim();
       if (cleanUrl) {
         cleanUrl = assertSafePublicUrl(cleanUrl).toString();
@@ -160,19 +161,22 @@ export async function PUT(
         title: item.title.trim(),
         url: cleanUrl,
         price: roundCurrency(Math.max(0, Number(item.price) || 0)),
+        optionGroup: item.optionGroup || 1,
         scraped: Boolean(item.scraped),
       };
     });
 
-    const total = sumGiftItems(sanitizedItems);
+    // Agrupa por opção: soma dentro da mesma opção, mas NÃO soma opções separadas entre si!
+    const { normalizedItems, groups, maxOptionTotal } =
+      summarizeGiftOptions(cleanedInput);
 
     const updated = await ParticipantModel.findByIdAndUpdate(
       participant._id,
       {
         $set: {
           giftHint: data.giftHint.trim(),
-          giftItems: sanitizedItems,
-          giftsTotal: total,
+          giftItems: normalizedItems,
+          giftsTotal: maxOptionTotal,
         },
       },
       { returnDocument: "after" }
@@ -190,9 +194,12 @@ export async function PUT(
         title: item.title,
         url: item.url || "",
         price: Number(item.price) || 0,
+        optionGroup:
+          Number(item.optionGroup) >= 1 ? Number(item.optionGroup) : 1,
         scraped: Boolean(item.scraped),
       })),
-      giftsTotal: total,
+      optionGroups: groups,
+      giftsTotal: maxOptionTotal,
     });
   } catch (err) {
     return handleApiError(err);
